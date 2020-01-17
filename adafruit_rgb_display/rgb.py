@@ -25,10 +25,12 @@
 
 Base class for all RGB Display devices
 
-* Author(s): Radomir Dopieralski, Michael McWethy
+* Author(s): Radomir Dopieralski, Michael McWethy, Jonah Yolles-Murphy
 """
 
 import time
+import gc
+
 try:
     import numpy
 except ImportError:
@@ -39,6 +41,12 @@ except ImportError:
     import ustruct as struct
 
 import adafruit_bus_device.spi_device as spi_device
+
+try:
+    from terminalio import FONT as _FONT
+    #from fonts.default import font as _FONT
+except:
+    _FONT = None
 
 __version__ = "0.0.0-auto.0"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_RGB_Display.git"
@@ -116,6 +124,7 @@ class Display: #pylint: disable-msg=no-member
     """Base class for all RGB display devices
         :param width: number of pixels wide
         :param height: number of pixels high
+        :param rotation: the rotation of the display in degrees
     """
     _PAGE_SET = None
     _COLUMN_SET = None
@@ -130,15 +139,29 @@ class Display: #pylint: disable-msg=no-member
 
     _CAN_ROTATE = False
 
-    def __init__(self, width, height, rotation):
+    def __init__(self, width, height, rotation, default_text_size = 1, default_font = _FONT, fast_text = True, DEBUG = False):
         self._width = width
         self._height = height
+
         if rotation not in (0, 90, 180, 270):
             raise ValueError('Rotation must be 0/90/180/270')
         self._rotation = rotation
+        self.default_font = default_font
+        self.default_text_size = default_text_size
+        self._font_glyph_coord_caches = {}
+        self.fast_text = fast_text
+
+        self._last_calcualted_string_specs = ([None], -1, -1)
+
+        self.DEBUG = DEBUG
+
         self.init()
         #Set rotation  and use RGB, x/y offsets need to be manually adjusted for each screen
         self.rotation = self._rotation
+
+    def _dbgout(self, *args, **kwargs):
+        if self.DEBUG:
+            print(args, kwargs)
 
     def init(self):
         """Run the initialization commands."""
@@ -149,16 +172,58 @@ class Display: #pylint: disable-msg=no-member
         pass #  cannot rotate as a default. if can set classes' _CAN_ROTATE True
 
     #pylint: disable-msg=invalid-name,too-many-arguments
-    def _block(self, x0, y0, x1, y1, data=None):
+    def _block(self, x0, y0, x1, y1, data=None, scale=1):
         """Read or write a block of data."""
-        self.write(self._COLUMN_SET, self._encode_pos(x0 + self._X_START, x1 + self._X_START))
-        self.write(self._PAGE_SET, self._encode_pos(y0 + self._Y_START, y1 + self._Y_START))
         if data is None:
+            #write destination to display
+            self.write(self._COLUMN_SET, self._encode_pos(x0 + self._X_START, x1 + self._X_START))
+            self.write(self._PAGE_SET, self._encode_pos(y0 + self._Y_START, y1 + self._Y_START))
+
             size = struct.calcsize(self._DECODE_PIXEL)
-            return self.read(self._RAM_READ,
-                             (x1 - x0 + 1) * (y1 - y0 + 1) * size)
-        self.write(self._RAM_WRITE, data)
-        return None
+            return self.read(self._RAM_READ, (x1 - x0 + 1) * (y1 - y0 + 1) * size)
+        else:
+            #make a larger bytearray if > 1
+            if scale > 1:
+                ##self._dbgout(x0, y0, x1, y1)
+                ##self._dbgout(x1 - x0 + 1, y1 - y0 + 1)
+                source_width = (x1 - x0 + 1)
+                source_height = (y1 - y0 + 1)
+                source = data
+
+                data_width = source_width * scale
+                data_height = source_height * scale
+                data = bytearray(source_width * 2  * source_height * scale**2)
+
+                #magic :-)
+                for y in range(0, source_height*2, 2): # evey pixel in the source (bytearray adressed)
+                    for x in range(0, source_width*2, 2):
+                        high_byte = source[x + source_width*y]
+                        low_byte =  source[x + source_width*y + 1]
+                        x_base = x * scale #left most pos of pixel
+                        y_base = y * scale * data_width  #the top most pos of the pixe
+                        for line in range(0, scale*2* data_width , 2*data_width ):
+                            for pixel in range(0, scale*2, 2):
+                                data[x_base + pixel + (y_base) + line ] = high_byte
+                                data[x_base + pixel + (y_base) + line + 1] = low_byte
+
+                #adjust x1 to match new size
+                x1 = x0 + data_width -1
+                y1 = y0 + data_height -1
+
+                del source, source_width, source_height
+                del data_width, data_height
+                del x, y, high_byte, low_byte, x_base, y_base
+                del line, pixel
+
+            # write destination  to display
+            self.write(self._COLUMN_SET, self._encode_pos(x0 + self._X_START, x1 + self._X_START))
+            self.write(self._PAGE_SET, self._encode_pos(y0 + self._Y_START, y1 + self._Y_START))
+
+            # write data to display
+            self.write(self._RAM_WRITE, data)
+            del data, x0, x1, y0, y1
+            gc.collect()
+            return None
     #pylint: enable-msg=invalid-name,too-many-arguments
 
     def _encode_pos(self, x, y):
@@ -240,6 +305,178 @@ class Display: #pylint: disable-msg=no-member
         """Draw a vertical line."""
         self.fill_rectangle(x, y, 1, height, color)
 
+    def text(self, x, y, string, size=0, color=0xffff, background=0x00, font=None, fast=None, estimate = False, center = False):
+        """draws text on the display of specififed color and background,
+            returns the width and hieght of the text placed
+            :param int x: the horizontal position of the left side of the text
+            :param int y: the vertical position of the top of the text
+            :param str string: the text to be displayed on the screen
+            :param int size: the scaling factor of the text, must be a whole number, defaults to display.default_text_size
+            :param int color: the color filling the characters, in rgb565 format, defaults to white
+            :param int backgound: is the color surrounding the characters, in rgb565 format, defaults to black
+            :param BuiltinFont font: the font to be used for the characters, defaults to display.default_font
+            :param bool fast: specifies to prioritize speed or memory usage.
+            :param bool estimate: does not place text, just retuns the (width, height) tuple
+            :param bool center: centers the text around the x,y coordinates specified
+        """
+        # later addin: backgound = None for transparent, but needs lower level tie-ins
+
+        #check input types and defaults
+        if (type(size) != int) or (size <=0):
+            raise ValueError("size must be a whole number of type 'int'")
+        if (type(color) != int) or (type(background) != int):
+            raise ValueError("color and background must be a whole number of type 'int'")
+
+        if font == None: # set to default font
+            if self.default_font == None:
+                raise ValueError("No font or .default_font specified")
+            else:
+                font = self.default_font
+
+        if size <= 0:
+            size = self.default_text_size
+
+        if fast == None:
+            fast = self.fast_text
+
+        lines = [line.strip() for line in string.split('\n')]
+
+        if center: # if centered find the toal size
+            #note calculations are stored in self._last_calcualted_string_specs
+            width, height = self.text(x, y, string, size=size,
+                                        color=color, background=background,
+                                        font=font, estimate = True,
+                                        fast = True, center = False)
+            domain_lines, buffer_width, buffer_height = self._last_calcualted_string_specs
+            x -= width //2
+            y -= height //2
+            #del width, height
+
+
+        if (fast == False) and (estimate == False):
+            max_width = 0
+            total_height = 0
+            for line_index in range(len(lines)): # intentional
+                line = lines[line_index]
+                if center:
+                    x_adj = x + round((buffer_width - domain_lines[line_index][-1]) // 2)
+                else:
+                    x_adj = x
+                new_width, new_height = self.text(x_adj, y+total_height, line, size=size,
+                                                    color=color, background=background,
+                                                    font=font, fast=True, center = False) #, center = center)
+                max_width = max(max_width, new_width)
+                total_height += new_height
+            del x_adj
+            return max_width, total_height
+
+
+        #calculate color bytes ahead of time
+        color_high = (color & 0xff00) >> 8
+        color_low  = (color & 0x00ff) >> 0
+        background_high = (background & 0xff00) >> 8
+        background_low  = (background & 0x00ff) >> 0
+
+        #fetch the font_glyph_cache of letter locations and dimensions
+        #the cache is identified by it's python object id
+        fontmap = font.bitmap
+        font_id = id(fontmap)
+        font_caches = self._font_glyph_coord_caches
+        if font_id in font_caches:
+            #self._dbgout('found desired font cached! id:', font_id)
+            font_cache = font_caches[font_id]
+        else:
+            #self._dbgout('desired font NOT cached! id:', font_id)
+            font_cache = {}
+            font_caches[font_id] = font_cache
+        del font_caches, font_id
+
+        # create a list of
+        buffer_width = 1 # in pixels (not scalled by size)
+        buffer_height = 0#1 #
+
+        if center:
+            domain_lines, buffer_width, buffer_height = self._last_calcualted_string_specs
+        else:
+            domain_lines = []
+            for line in lines:
+                domain_line = []
+                line_width = 1
+                domain_lines.append(domain_line)
+                for char in line:
+
+                    #get the glyph from the cache or the font
+                    glyph_domain = font_cache.get(char)
+                    # if glyph is not cached cache it
+                    if glyph_domain == None:
+                        #self._dbgout("caching new char:'"+char+"'")
+                        glyph = font.get_glyph(ord(char))
+                        glyph_domain = (glyph.tile_index, glyph.width, glyph.height)
+                        font_cache[char] = glyph_domain
+
+                    #add the glyph to the current line
+                    domain_line.append((char, glyph_domain, line_width, buffer_height))
+                    line_width += glyph_domain[1] + 1
+                domain_line.append(line_width)
+                buffer_width = max(buffer_width, line_width)
+                buffer_height += fontmap.height
+            del line, lines, line_width
+            gc.collect()# incase low on ram
+
+        if estimate:
+            self._last_calcualted_string_specs = (domain_lines, buffer_width, buffer_height)
+            return buffer_width*size, buffer_height*size
+        else:
+            self._last_calcualted_string_specs = ([None], -1, -1)
+
+        #buffer_width *= size
+        #buffer_height *= size
+        buffer_length = buffer_width * buffer_height * 2 #* size**2
+        buffer = bytearray(buffer_length)
+        #self._dbgout(buffer_len = buffer_length, buffer_width=buffer_width, buffer_height=buffer_height)
+
+        #write the
+        for domain_line in domain_lines:
+            for positioned_domain in domain_line[:-1]:
+                char, domain, char_x, char_y = positioned_domain
+                index, width, height = domain
+                #if center and fast: # if slow handled below line by line
+                #    char_x += (buffer_width - domain_line[-1])//2
+
+                for pixel_y in range(height):
+                    #stripe the left sode of the char w/ background
+                    edge_pixel_index = (((char_y + pixel_y ) * buffer_width) + char_x - 1) * 2
+                    buffer[edge_pixel_index] = background_high
+                    buffer[edge_pixel_index + 1] = background_low
+
+                    for pixel_x in range(width):
+
+                        #if size == 1: # yeah, it;s an optimization but  ¯\_(ツ)_/¯
+                        pixel_index = (((char_y + pixel_y) * buffer_width) + char_x + pixel_x) * 2
+                        if fontmap[index*width + pixel_x, pixel_y]:
+                            buffer[pixel_index] = color_high
+                            buffer[pixel_index + 1] = color_low
+                        else:
+                            buffer[pixel_index] = background_high
+                            buffer[pixel_index + 1] = background_low
+
+        del domain_line, domain_lines, positioned_domain
+        del char, domain, char_x, char_y
+        del index, width, height
+        del pixel_y, pixel_x, pixel_index
+        del color_high, color_low, background_high, background_low
+
+        #sendt he buffer to the display
+        gc.collect() # incase low on ram before block goes out
+        #if center:
+            #x += buffer_width//2
+        #    y -= buffer_height//2
+        self._block(x, y, buffer_width + x - 1, buffer_height + y - 1, data=buffer, scale=size) # scale=size
+        del buffer, x, y
+        gc.collect()
+
+        return buffer_width*size, buffer_height*size
+
     @property
     def rotation(self):
         """Set the default rotation"""
@@ -270,7 +507,7 @@ class DisplaySPI(Display):
     #pylint: disable-msg=too-many-arguments
     def __init__(self, spi, dc, cs, rst=None, width=1, height=1,
                  baudrate=12000000, polarity=0, phase=0, *,
-                 x_offset=0, y_offset=0, rotation=0):
+                 x_offset=0, y_offset=0, rotation=0, **kwargs):
         self.spi_device = spi_device.SPIDevice(spi, cs, baudrate=baudrate,
                                                polarity=polarity, phase=phase)
         self.dc_pin = dc
@@ -283,7 +520,7 @@ class DisplaySPI(Display):
         self._y_offset = y_offset
         self._X_START = x_offset # pylint: disable=invalid-name
         self._Y_START = y_offset # pylint: disable=invalid-name
-        super().__init__(width, height, rotation)
+        super().__init__(width, height, rotation, **kwargs)
     #pylint: enable-msg=too-many-arguments
 
     def reset(self):
