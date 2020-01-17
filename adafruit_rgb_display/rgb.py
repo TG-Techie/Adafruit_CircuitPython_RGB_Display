@@ -30,6 +30,7 @@ Base class for all RGB Display devices
 
 import time
 import gc
+from math import sqrt
 
 try:
     import numpy
@@ -148,10 +149,12 @@ class Display: #pylint: disable-msg=no-member
         self._rotation = rotation
         self.default_font = default_font
         self.default_text_size = default_text_size
-        self._font_glyph_coord_caches = {}
         self.fast_text = fast_text
 
         self._last_calcualted_string_specs = ([None], -1, -1)
+
+        self._font_glyph_coord_caches = {}
+        self._radius_cutoff_cache = {}
 
         self.DEBUG = DEBUG
 
@@ -275,10 +278,11 @@ class Display: #pylint: disable-msg=no-member
                     pixels[2*(j * imwidth + i) + 1] = pix & 0xFF
         self._block(x, y, x + imwidth - 1, y + imheight - 1, pixels)
 
-    #pylint: disable-msg=too-many-arguments
+    # pylint: disable-msg=too-many-arguments
+    # change to fill_rect? hline and vline are abreviated
     def fill_rectangle(self, x, y, width, height, color):
         """Draw a rectangle at specified position with specified width and
-        height, and fill it with the specified color."""
+        height, fill it with the specified color."""
         x = min(self.width - 1, max(0, x))
         y = min(self.height - 1, max(0, y))
         width = min(self.width - x, max(1, width))
@@ -291,19 +295,57 @@ class Display: #pylint: disable-msg=no-member
             for _ in range(chunks):
                 self.write(None, data)
         self.write(None, pixel * rest)
-    #pylint: enable-msg=too-many-arguments
+
+    def fill_roundrect(self, x, y, width, height, radius, color): # change order?
+        """Draw a rectangle at specified position with specified width and
+        height and rounded corners,  fill it with the specified color."""
+
+        # make sure radius doesnt pass middle
+        radius = min(radius, width//2, height//2)
+
+        #calculations
+        # want width based on elevation
+        # r**2 =  x**2 + y**2
+        # x**2 =  r**2 - y**2
+        #    x = (r**2 - y**2)**(1/2) # root
+        #       x = cutoff width to subtract from the edges
+        #       y = "elevation"
+
+        if radius:
+            lines = [] # buffer for lines, reduce calcualation time
+            radius_sqrd = radius**2
+            y_plus_radius = y + radius
+            for elevation in range(radius, 0, -1):
+                #calc and store line
+                cutoff = radius - round(sqrt(radius_sqrd - (elevation**2)))
+                line_x = x + cutoff
+                line_width = (width - cutoff*2)
+                lines.insert(0, (line_x, line_width))
+
+                self.fill_rectangle(line_x, y_plus_radius  - elevation, line_width, 1, color)
+
+            self.fill_rectangle(x, y_plus_radius, width, height - radius*2, color)
+
+            height_mins_radius = height - radius
+            for elevation in range(radius):
+                print(elevation)
+                line_x, line_width = lines[elevation]
+                self.fill_rectangle(line_x , y + height_mins_radius + elevation, line_width, 1, color)
+        else:
+            self.fill_rectangle(x, y, width, height, color)
+    # pylint: enable-msg=too-many-arguments
 
     def fill(self, color=0):
         """Fill the whole display with the specified color."""
         self.fill_rectangle(0, 0, self.width, self.height, color)
 
-    def hline(self, x, y, width, color):
+    def hline(self, x, y, length, color):
         """Draw a horizontal line."""
-        self.fill_rectangle(x, y, width, 1, color)
+        self.fill_rectangle(x, y, length, 1, color)
 
-    def vline(self, x, y, height, color):
+    def vline(self, x, y, length, color):
         """Draw a vertical line."""
-        self.fill_rectangle(x, y, 1, height, color)
+        self.fill_rectangle(x, y, 1, length, color)
 
     def text(self, x, y, string, size=0, color=0xffff, background=0x00, font=None, fast=None, estimate = False, center = False):
         """draws text on the display of specififed color and background,
