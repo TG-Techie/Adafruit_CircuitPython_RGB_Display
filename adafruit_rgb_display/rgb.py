@@ -442,10 +442,14 @@ class Display: #pylint: disable-msg=no-member
                 index, width, height = domain
                 #if center and fast: # if slow handled below line by line
                 #    char_x += (buffer_width - domain_line[-1])//2
+                for pixel_y in range(height):
+                    edge_pixel_index = (((char_y + pixel_y ) * buffer_width) + char_x -1) * 2
+                    buffer[edge_pixel_index] = background_high
+                    buffer[edge_pixel_index + 1] = background_low
 
                 for pixel_y in range(height):
                     #stripe the left sode of the char w/ background
-                    edge_pixel_index = (((char_y + pixel_y ) * buffer_width) + char_x - 1) * 2
+                    edge_pixel_index = (((char_y + pixel_y ) * buffer_width) + char_x + width) * 2
                     buffer[edge_pixel_index] = background_high
                     buffer[edge_pixel_index + 1] = background_low
 
