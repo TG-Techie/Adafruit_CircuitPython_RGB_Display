@@ -316,12 +316,8 @@ class Display: #pylint: disable-msg=no-member
             radius_sqrd = radius**2
             y_plus_radius = y + radius
             for elevation in range(radius, 0, -1):
-                #calc and store cuttoff
-                #print(elevation, radius, elevation**2 - radius_sqrd)
-                cutoff = self._radius_cutoff_cache.get(elevation)
-                if cutoff == None:
-                    cutoff = radius - round(sqrt(radius_sqrd - (elevation**2)))
-                    self._radius_cutoff_cache[elevation] = cutoff
+                #calc and store line
+                cutoff = radius - round(sqrt(radius_sqrd - (elevation**2)))
                 line_x = x + cutoff
                 line_width = (width - cutoff*2)
                 lines.insert(0, (line_x, line_width))
@@ -334,9 +330,9 @@ class Display: #pylint: disable-msg=no-member
             for elevation in range(radius):
                 print(elevation)
                 line_x, line_width = lines[elevation]
-                self.fill_rectangle(line_x , height + elevation, line_width, 1, color)
+                self.fill_rectangle(line_x , y + height_mins_radius + elevation, line_width, 1, color)
         else:
-            self.fill_rectangle(self, x, y, width, height, color)
+            self.fill_rectangle(x, y, width, height, color)
     # pylint: enable-msg=too-many-arguments
 
     def fill(self, color=0):
