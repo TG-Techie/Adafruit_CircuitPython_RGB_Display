@@ -328,7 +328,6 @@ class Display: #pylint: disable-msg=no-member
 
             height_mins_radius = height - radius
             for elevation in range(radius):
-                print(elevation)
                 line_x, line_width = lines[elevation]
                 self.fill_rectangle(line_x , y + height_mins_radius + elevation, line_width, 1, color)
         else:
